@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -293,7 +293,7 @@ def main():
             tcp_rest_orientation = ee_frame_sensor.data.target_quat_w[..., 0, :].clone()
             # -- object frame
             object_data: RigidObjectData = env.unwrapped.scene["object"].data
-            object_position = object_data.root_link_pos_w - env.unwrapped.scene.env_origins
+            object_position = object_data.root_pos_w - env.unwrapped.scene.env_origins
             # -- target object frame
             desired_position = env.unwrapped.command_manager.get_command("object_pose")[..., :3]
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -107,7 +107,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     joint_accel_reward_scale = -2.5e-7
     action_rate_reward_scale = -0.01
     feet_air_time_reward_scale = 0.5
-    undersired_contact_reward_scale = -1.0
+    undesired_contact_reward_scale = -1.0
     flat_orientation_reward_scale = -5.0
 
 
