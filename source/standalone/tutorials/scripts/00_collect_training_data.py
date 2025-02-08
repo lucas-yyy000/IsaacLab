@@ -86,9 +86,9 @@ import omni.kit.actions.core
 
 def main():
     """Main function."""
-    omni.usd.get_context().open_stage("/home/lucas/Workspace/IsaacSimTerrains/terrains/terrain_0_world.usd")
+    omni.usd.get_context().open_stage("/home/lucas/Documents/Omniverse/IsaacSimTerrains/terrains/terrain_0.usd")
     # Load simulation context
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
+    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device, dt=1e-3)
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([0, 0, 50.0], [100.0, 100.0, 30.0])
@@ -122,14 +122,14 @@ def main():
 
 
     # Create replicator writer
-    output_dir = os.path.join("/media/lucas/T9/TrainingData", "data")
+    output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TrainingData", "img_data")
     rep_writer = rep.BasicWriter(
         output_dir=output_dir,
         frame_padding=0
     )
 
 
-    base_path = "/media/lucas/T9/ExpertDemonstrations/"
+    base_path = "/home/lucas/Workspace/LowAltitudeFlight/TrainingData/expert_demonstrations"
     x_offset = -114.6951789855957
     y_offset = -78.78693771362305
     Rot = R.from_matrix(np.asarray([
@@ -139,7 +139,7 @@ def main():
     ]))
     
     num=0
-    states = genfromtxt(base_path + f"{num}_states.csv", delimiter=',')
+    states = genfromtxt(os.path.join(base_path, f"{num}_states.csv"), delimiter=',')
     states = states[1:, :-1]
     states[:, 0] += x_offset
     states[:, 1] += y_offset
@@ -147,7 +147,8 @@ def main():
     state = states[step_idx, :]
     step_max = len(states)
     pos = Rot.apply(state[:3])
-    att = Rot*R.from_quat([state[4], state[5], state[6], state[3]])
+    attitude_start_idx = 6
+    att = Rot*R.from_quat([state[attitude_start_idx+1], state[attitude_start_idx+2], state[attitude_start_idx+3], state[attitude_start_idx]])
     att = att.as_quat()
     att = np.asarray([att[-1], att[0], att[1], att[2]])
     camera_positions = torch.tensor([pos], device=sim.device, dtype=torch.float32)
@@ -156,7 +157,7 @@ def main():
     camera.set_world_poses(camera_positions, camera_orientations, convention='world')
     print("Set camera pose successfully.")
     camera_index = 0
-    time.sleep(5.0)
+    # time.sleep(5.0)
     # Run simulator
     while simulation_app.is_running():
         sim.step()
@@ -195,7 +196,7 @@ def main():
         step_idx += 1
         if step_idx >= step_max:
             num += 1
-            states = genfromtxt(base_path + f"{num}_states.csv", delimiter=',')
+            states = genfromtxt(os.path.join(base_path, f"{num}_states.csv"), delimiter=',')
             states = states[1:, :-1]
             states[:, 0] += x_offset
             states[:, 1] += y_offset
@@ -204,7 +205,7 @@ def main():
         
         state = states[step_idx, :]
         pos = Rot.apply(state[:3])
-        att = Rot*R.from_quat([state[4], state[5], state[6], state[3]])
+        att =  Rot*R.from_quat([state[attitude_start_idx+1], state[attitude_start_idx+2], state[attitude_start_idx+3], state[attitude_start_idx]])
         att = att.as_quat()
         att = np.asarray([att[-1], att[0], att[1], att[2]])
         camera_positions = torch.tensor([pos], device=sim.device, dtype=torch.float32)

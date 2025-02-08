@@ -24,9 +24,10 @@ the simulator or OpenGL convention for the camera, we use the robotics or ROS co
 import argparse
 
 from omni.isaac.lab.app import AppLauncher
+from torchvision import transforms
 
 from torchcubicspline import(natural_cubic_spline_coeffs, NaturalCubicSpline)
-from imperative_learning.models.baseline import ForwardDepthModel
+from imperative_learning.models.lhsf_model import PlannerNet
 
 
 
@@ -89,9 +90,40 @@ from omni.isaac.lab.utils import convert_dict_to_backend
 import omni.kit.actions.core
 from omni.kit.viewport.utility import get_active_viewport
 
-
+class NetParams:
+    def __init__(self, **entries):
+        self.__dict__.update(entries)
 
 # torch.set_default_dtype(torch.float32)
+
+def closest_point_on_segment(P, A, B):
+    """Finds the closest point on the segment (a,b,c) -> (d,e,f) to the point (x,y,z)."""
+    AB = B - A
+    AP = P - A
+    
+    t = np.dot(AP, AB) / np.dot(AB, AB)
+    t = np.clip(t, 0, 1)  # Ensuring it's within the segment
+    
+    closest_point = A + t * AB
+    return closest_point
+
+def reference_point_on_line(P, A, B, distance=30):
+    """Finds a point on the segment that is exactly 30m away from (x,y,z) or the closest point if farther."""
+    closest = closest_point_on_segment(P, A, B)
+    
+    dist_to_line = np.linalg.norm(closest - P)
+    
+    if dist_to_line >= distance:
+        return closest  # If the closest point is already farther than 30m, return it
+    
+    AB = B - A
+    AB_normalized = AB / np.linalg.norm(AB)  # Normalize the segment direction
+    
+    # Move along the line segment by 30m from the closest point
+    ref_point = closest + AB_normalized * np.sqrt(distance**2 - dist_to_line**2)
+
+    # Project the target point back onto the line segment
+    return ref_point
 
 def main():
     """Main function."""
@@ -140,14 +172,24 @@ def main():
 
     # Load Student Policy
     device='cuda'
-    root_path = "/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning"
+    checkpoints_path = "/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/checkpoints"
+    run_name = "0bfd072d"
+    checkpoint_name = "epoch_210.pth"
 
-    run_name = "6eb69668"
-    checkpoint_path = os.path.join(root_path, "checkpoints", run_name)
-    checkpoint_name = 'epoch_70.pth'
+    with open(os.path.join(checkpoints_path, run_name, "config.yaml"), "r") as f:
+        config = yaml.load(f, Loader=yaml.SafeLoader)
 
-    planner_net = ForwardDepthModel([256, 256], hidden_dim=512).to(device)
-    checkpoint = torch.load(os.path.join(checkpoint_path, checkpoint_name), map_location=device)
+    data_config = config['data']
+    img_size = data_config['img_size']
+
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Resize(img_size)
+    ])
+
+    model_config = config['model']
+    planner_net = PlannerNet(NetParams(**model_config)).to(device)
+    checkpoint = torch.load(os.path.join(checkpoints_path, run_name, checkpoint_name), map_location=device)
     planner_net.load_state_dict(checkpoint['model_state_dict'])
     planner_net.eval()
 
@@ -163,10 +205,29 @@ def main():
     num=2
     states = genfromtxt(os.path.join(base_path, f"{num}_states.csv"), delimiter=',')
     states = states[1:, :-1]
+    states[:, 0] += x_offset
+    states[:, 1] += y_offset
 
-    cur_loc = states[0, :3] + np.asarray([x_offset, y_offset, 0])
-    cur_att = states[0, 3:7]
-    goal = states[-1, :3] + np.asarray([x_offset, y_offset, 0])
+
+    #####  TEST POINTS #####
+    # start_location = np.array([4.3638, -54.2186, 30.0])
+    # goal_location = np.array([50.36758, 65.43091, 30.0])
+
+    start_location = np.array([4.3638, -54.2186, 30.0])
+    goal_location_1 = np.array([-70.36758, -30.43091, 30.0])
+    goal_location_2 = np.array([-70.36758, 65.43091, 30.0])
+    ########################
+    cur_loc = start_location
+    yaw = np.arctan2(goal_location_1[1] - start_location[1], goal_location_1[0] - start_location[0])
+    cur_att = R.from_euler('z', yaw).as_quat()
+    cur_att = np.asarray([cur_att[-1], cur_att[0], cur_att[1], cur_att[2]])
+    goal = goal_location_1
+
+    # cur_loc = states[0, :3] 
+    # cur_att = states[0, 3:7]
+    # start = states[0, :3]
+    # goal = states[-1, :3]
+
 
     cur_loc_isaac = Rot.apply(cur_loc)
     cur_att_isaac = Rot*R.from_quat([cur_att[1], cur_att[2], cur_att[3], cur_att[0]])
@@ -179,47 +240,80 @@ def main():
     print("Set camera pose successfully.")
     print("Starting at: ", cur_loc)
     trajectory = []
-    time.sleep(1.0)
+    trajectory_full = []
+    collision_cost_prediction = []
+    reference_points = []
+    # time.sleep(1.0)
     iterations = 0
+
+    first_goal_reached = False
     # Run simulator
     while simulation_app.is_running():
         sim.step()
         camera.update(dt=sim.get_physics_dt())
 
-        # heading = (goal - cur_loc) / 100.0
-        heading = goal - cur_loc
+        # heading = goal - cur_loc
+        # reference_point = reference_point_on_line(cur_loc, start, goal)
+        # if 5*iterations + 200 < len(states):
+        #      reference_point = states[5*iterations + 200, :3]
+        # else:
+        #     reference_point = goal
+        
+        # heading = reference_point - cur_loc
 
-        if np.linalg.norm(heading[:2]) < 20.0:
+        heading = goal - cur_loc
+        if np.linalg.norm(heading[:2]) < 15.0:
+            if first_goal_reached:
+                break
+            else:
+                first_goal_reached = True
+                goal = goal_location_2
+                heading = goal - cur_loc
+
+
+        if np.linalg.norm(goal - cur_loc) < 20.0:
             break
 
         heading /= np.linalg.norm(heading)
         heading = torch.from_numpy(heading).unsqueeze(dim=0).to(device).to(torch.float32)
-        depth_img = camera.data.output["distance_to_image_plane"].squeeze(dim=3).to(device)
+        depth_img = camera.data.output["distance_to_image_plane"].squeeze(dim=3).squeeze(dim=0).cpu().numpy()
+        print("Depth image shape: ", depth_img.shape)
+        depth_img = transform(depth_img)
         depth_img /= 1000.0
+        depth_img = depth_img.unsqueeze(dim=0).to(device)
         attitude = torch.from_numpy(cur_att).unsqueeze(dim=0).to(device).to(torch.float32)
-        # print("Attitude shape: ", attitude, attitude.shape)
         cur_loc_torch = torch.from_numpy(cur_loc).unsqueeze(dim=0).to(device)
+        states = torch.cat((heading, attitude), dim=-1)
+
         with torch.no_grad():
-            planned_states = planner_net(depth_img, heading, attitude, cur_loc_torch)
+            student_path_local, collision_prediction = planner_net(states, depth_img)
 
+        student_path_global = student_path_local + cur_loc_torch[:, None, None, :]
+        collision_prediction = collision_prediction.squeeze(dim=0).cpu().numpy()
         # planned_states = planned_states.squeeze(dim=0).cpu().numpy()
-        batch_size, num_p, _ = planned_states.shape
-        t = torch.linspace(0, 1, num_p+1).to(planned_states.device)
-        coeffs = natural_cubic_spline_coeffs(t, torch.cat((cur_loc_torch.unsqueeze(dim=1), planned_states), dim=1))
-        spline = NaturalCubicSpline(coeffs)
-        t = torch.linspace(0, 1, 20).to(planned_states.device)
-        trajectory_interpolated = spline.evaluate(t)
-        trajectory_interpolated = trajectory_interpolated.squeeze(dim=0).cpu().numpy()
+        student_path_global = student_path_global.squeeze(dim=0).squeeze(dim=0).cpu().numpy()
+        # batch_size, num_p, _ = student_path_global.shape
+        # t = torch.linspace(0, 1, num_p+1).to(student_path_local.device)
+        # coeffs = natural_cubic_spline_coeffs(t, torch.cat((cur_loc_torch.unsqueeze(dim=1), student_path_global), dim=1))
+        # spline = NaturalCubicSpline(coeffs)
+        # t = torch.linspace(0, 1, 20).to(student_path_global.device)
+        # trajectory_interpolated = spline.evaluate(t)
+        # trajectory_interpolated = trajectory_interpolated.squeeze(dim=0).cpu().numpy()
 
-        
-        next_loc = trajectory_interpolated[3, :3]
-        yaw = np.arctan2(next_loc[1] - cur_loc[1], next_loc[0] - cur_loc[0])
+        # if collision_prediction[0][0] > 1.5:
+        #     student_path_global[0, 2] = cur_loc[2]
+
+        next_loc = student_path_global[5, :3]
+        next_loc_prev = student_path_global[4, :3]
+        yaw = np.arctan2(next_loc[1] - next_loc_prev[1], next_loc[0] - next_loc_prev[0])
         next_att = R.from_euler('z', yaw).as_quat()
-        next_att = np.asarray([next_att[-1], next_att[1], next_att[2], next_att[3]])
+        next_att = np.asarray([next_att[-1], next_att[0], next_att[1], next_att[2]])
 
         print("Current location: ", cur_loc)
         print("Goal location: ", goal)
-        print("Planned states", planned_states[:, :3])
+        # print("Reference location: ", reference_point)
+        print("Planned states", student_path_global[:, :3])
+        print("Collision probability: ", collision_prediction)
 
         next_loc_isaac = Rot.apply(next_loc)
         next_att_isaac = Rot*R.from_quat([next_att[1], next_att[2], next_att[3], next_att[0]])
@@ -232,17 +326,32 @@ def main():
         camera.set_world_poses(camera_positions, camera_orientations, convention='world')
 
         trajectory.append(cur_loc)
+        trajectory_full.append(student_path_global)
+        collision_cost_prediction.append(collision_prediction)
+        # reference_points.append(reference_point)
         cur_loc = next_loc
         cur_att  = next_att
         iterations += 1
         if iterations > 5:
             trajectory_np = np.asarray(trajectory)
+            trajectory_full_np = np.asarray(trajectory_full)
+            collision_np = np.asarray(collision_cost_prediction)
+            # reference_points_np = np.asarray(reference_points)
             np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/imperative_trajectory.npy", trajectory_np)
+            np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/trajectory_full_np.npy", trajectory_full_np)
+            np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/imperative_trajectory_collision.npy", collision_np)
+            # np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/reference_points.npy", reference_points_np)
         
         time.sleep(0.05)
 
     trajectory = np.asarray(trajectory)
+    trajectory_full_np = np.asarray(trajectory_full)
+    collision_np = np.asarray(collision_cost_prediction)
+    # reference_points_np = np.asarray(reference_points)
     np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/imperative_trajectory.npy", trajectory)
+    np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/trajectory_full_np.npy", trajectory_full_np)
+    np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/imperative_trajectory_collision.npy", collision_np)
+    # np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/reference_points.npy", reference_points_np)
 
 if __name__ == "__main__":
     # run the main function

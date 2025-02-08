@@ -24,7 +24,10 @@ the simulator or OpenGL convention for the camera, we use the robotics or ROS co
 import argparse
 
 from omni.isaac.lab.app import AppLauncher
-from low_altitude_nav.models.cvae import ForwardRGBDownwardRGBModel
+from torchvision import transforms
+
+from low_altitude_nav.models.lhsf_model import PlannerNet
+
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="This script demonstrates how to use the camera sensor.")
@@ -72,6 +75,7 @@ import torch
 
 import omni.isaac.core.utils.prims as prim_utils
 import omni.replicator.core as rep
+
 import omni
 
 import omni.isaac.lab.sim as sim_utils
@@ -83,6 +87,10 @@ from omni.isaac.lab.sensors.camera.utils import create_pointcloud_from_depth
 from omni.isaac.lab.utils import convert_dict_to_backend
 import omni.kit.actions.core
 from omni.kit.viewport.utility import get_active_viewport
+
+class NetParams:
+    def __init__(self, **entries):
+        self.__dict__.update(entries)
 
 # torch.set_default_dtype(torch.float32)
 
@@ -132,34 +140,29 @@ def main():
     viewport.camera_path = camera_path
 
     # Load Student Policy
-    checkpoints_base_dir = "/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/checkpoints"
-    run_name = "bc_cvae_7c1bf39e"
+    device='cuda'
+    checkpoints_path = "/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/checkpoints"
+    run_name = "bc_cvae_128633e4"
+    epoch = 0
+    # checkpoint_name = f"epoch_{epoch}.pth"
     checkpoint_name = "best_model.pth"
-    checkpoint_path = os.path.join(checkpoints_base_dir, run_name, checkpoint_name)
-    with open(os.path.join(checkpoints_base_dir, run_name, "config.yaml")) as file_object:
-        config = yaml.load(file_object, Loader=yaml.SafeLoader)
-    img_size = config['data']['img_size']
-    hidden_dim = config['model']['hidden_dim']
-    cvae_latent_dim = config['model']['cvae_latent_dim']
-    
-    device = 'cuda'
-    student_policy = ForwardRGBDownwardRGBModel(img_size, hidden_dim, cvae_latent_dim).to(device)
-    checkpoint = torch.load(checkpoint_path)
-    student_policy.device = device
-    student_policy.load_state_dict(checkpoint['model_state_dict'])
-    student_policy.eval()
-    # for name, param in student_policy.named_parameters():
-    #     print(f"Parameter: {name}, Data type: {param.dtype}")
-    # print("Student policy dtype: ", student_policy.dtype)
-    # Create replicator writer
-    # output_dir = os.path.join("/media/lucas/T9/TrainingData", "data")
-    # rep_writer = rep.BasicWriter(
-    #     output_dir=output_dir,
-    #     frame_padding=0
-    # )
+    with open(os.path.join(checkpoints_path, run_name, "config.yaml"), "r") as f:
+        config = yaml.load(f, Loader=yaml.SafeLoader)
 
+    data_config = config['data']
+    img_size = data_config['img_size']
 
-    # base_path = "/media/lucas/T9/ExpertDemonstrations/"
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Resize(img_size)
+    ])
+
+    model_config = config['model']
+    planner_net = PlannerNet(NetParams(**model_config)).to(device)
+    checkpoint = torch.load(os.path.join(checkpoints_path, run_name, checkpoint_name), map_location=device)
+    planner_net.load_state_dict(checkpoint['model_state_dict'])
+    planner_net.eval()
+
     base_path = "/home/lucas/Workspace/LowAltitudeFlight/expert_demonstrations/ExpertDemonstrations"
     x_offset = -114.6951789855957
     y_offset = -78.78693771362305
@@ -169,92 +172,142 @@ def main():
         [0, 0, 1]
     ]))
     
-    num=200
+    num=10
     states = genfromtxt(os.path.join(base_path, f"{num}_states.csv"), delimiter=',')
     states = states[1:, :-1]
+    states[:, 0] += x_offset
+    states[:, 1] += y_offset
 
-    cur_loc = states[0, :3]
-    cur_att = states[0, 3:7]
-    goal = states[-1, :3]
 
-    # cur_loc = np.asarray([20.6324, -36.8251, 25.3167])
-    # cur_att = np.asarray([1.0, 0.0, 0.0, 0.0])
-    # goal = np.asarray([20.6324, 40.8251, 25.3167])
+    #####  TEST POINTS #####
+    # start_location = np.array([4.3638, -54.2186, 30.0])
+    # goal_location = np.array([50.36758, 65.43091, 30.0])
 
-    pos = Rot.apply(cur_loc + np.asarray([x_offset, y_offset, 0]))
-    att = Rot*R.from_quat([cur_att[1], cur_att[2], cur_att[3], cur_att[0]])
-    att = att.as_quat()
-    att = np.asarray([att[-1], att[0], att[1], att[2]])
+    start_location = np.array([4.3638, -54.2186, 30.0])
+    goal_location_1 = np.array([-70.36758, -30.43091, 30.0])
+    goal_location_2 = np.array([-70.36758, 65.43091, 30.0])
+    ########################
 
-    camera_positions = torch.tensor([pos], device=sim.device, dtype=torch.float32)
-    camera_orientations = torch.tensor([att], device=sim.device, dtype=torch.float32)
+    # cur_loc = states[0, :3]
+    # cur_att = states[0, 3:7]
+    cur_loc = start_location
+    yaw = np.arctan2(goal_location_1[1] - start_location[1], goal_location_1[0] - start_location[0])
+    cur_att = R.from_euler('z', yaw).as_quat()
+    cur_att = np.asarray([cur_att[-1], cur_att[0], cur_att[1], cur_att[2]])
+    
+    # goal_idx = -1
+    # goal = states[goal_idx, :3]
+    goal = goal_location_1
+
+    cur_loc_isaac = Rot.apply(cur_loc)
+    cur_att_isaac = Rot*R.from_quat([cur_att[1], cur_att[2], cur_att[3], cur_att[0]])
+    cur_att_isaac = cur_att_isaac.as_quat()
+    cur_att_isaac = np.asarray([cur_att_isaac[-1], cur_att_isaac[0], cur_att_isaac[1], cur_att_isaac[2]])
+
+    camera_positions = torch.tensor([cur_loc_isaac], device=sim.device, dtype=torch.float32)
+    camera_orientations = torch.tensor([cur_att_isaac], device=sim.device, dtype=torch.float32)
     camera.set_world_poses(camera_positions, camera_orientations, convention='world')
     print("Set camera pose successfully.")
     print("Starting at: ", cur_loc)
-    camera_index = 0
-    action_scaling = 5.0
     trajectory = []
-    time.sleep(1.0)
+    collision_cost_prediction = []
+    # time.sleep(1.0)
     iterations = 0
+
+    first_goal_reached = False
     # Run simulator
     while simulation_app.is_running():
         sim.step()
         camera.update(dt=sim.get_physics_dt())
 
-        # # Print camera info
-        # print(camera)
+        heading = goal - cur_loc
 
-        # if "rgb" in camera.data.output.keys():
-        #     print("Received shape of rgb image  : ", camera.data.output["rgb"].shape)
-        # if "distance_to_image_plane" in camera.data.output.keys():
-        #     print("Received shape of depth image : ", camera.data.output["distance_to_image_plane"].shape)
+        if np.linalg.norm(heading[:2]) < 15.0:
+            if first_goal_reached:
+                break
+            else:
+                first_goal_reached = True
+                goal = goal_location_2
+                heading = goal - cur_loc
 
-        if np.linalg.norm(goal - cur_loc) < 10.0:
-            break
-
-        heading = (goal - cur_loc) / 100.0
+        heading /= 10.0
         heading = torch.from_numpy(heading).unsqueeze(dim=0).to(device).to(torch.float32)
-        depth_img = camera.data.output["distance_to_image_plane"].squeeze(dim=3).to(device)
+        depth_img = camera.data.output["distance_to_image_plane"].squeeze(dim=3).squeeze(dim=0).cpu().numpy()
+        # print("Depth image: ", depth_img)
+        depth_img = transform(depth_img)
         depth_img /= 1000.0
-        attitude = torch.from_numpy(att).unsqueeze(dim=0).to(device).to(torch.float32)
+        depth_img = depth_img.unsqueeze(dim=0).to(device)
+        # print("Depth image: ", depth_img)
+        attitude = torch.from_numpy(cur_att).unsqueeze(dim=0).to(device).to(torch.float32)
+        cur_loc_torch = torch.from_numpy(cur_loc).unsqueeze(dim=0).to(device)
+        input_states = torch.cat((heading, attitude), dim=-1)
 
         with torch.no_grad():
-            planned_states = student_policy.act(depth_img, attitude, heading)
+            student_path_local, collision_prediction = planner_net(input_states, depth_img)
 
-        planned_states = planned_states.squeeze(dim=0).cpu().numpy()
-        next_loc = np.asarray([cur_loc[0] + action_scaling*planned_states[0, 0], cur_loc[1] + action_scaling*planned_states[0, 1], cur_loc[2] + action_scaling*planned_states[0, 2]])
-        next_att = planned_states[0, 3:]
+        student_path_global = student_path_local + cur_loc_torch[:, None, None, :]
+        collision_prediction = collision_prediction.squeeze(dim=0).cpu().numpy()
+        print("Collision Prediction: ", collision_prediction.shape, collision_prediction)
+        # planned_states = planned_states.squeeze(dim=0).cpu().numpy()
+        student_path_global = student_path_global.squeeze(dim=0).cpu().numpy()
+        # traj_idx = np.argmin(collision_prediction)
+        traj_idx = 0
+        # print("Min cost trajectory index: ", traj_idx)
+        # batch_size, num_p, _ = student_path_global.shape
+        # t = torch.linspace(0, 1, num_p+1).to(student_path_local.device)
+        # coeffs = natural_cubic_spline_coeffs(t, torch.cat((cur_loc_torch.unsqueeze(dim=1), student_path_global), dim=1))
+        # spline = NaturalCubicSpline(coeffs)
+        # t = torch.linspace(0, 1, 20).to(student_path_global.device)
+        # trajectory_interpolated = spline.evaluate(t)
+        # trajectory_interpolated = trajectory_interpolated.squeeze(dim=0).cpu().numpy()
 
-        # r1 = R.from_quat([cur_att[1], cur_att[2], cur_att[3], cur_att[0]])
-        # r2 = R.from_quat([next_att[1], next_att[2], next_att[3], next_att[0]])
-        # r_avg = R.slerp(0.5, [r1, r2])  # Interpolate at the halfway point
-        # r_avg = r_avg.as_quat()
-        # next_att = np.asarray([r_avg[-1], r_avg[0], r_avg[1], r_avg[2]])
         
-        # print("Current location: ", cur_loc)
-        # print("Goal location: ", goal)
-        # print("Planned states", planned_states[:, :3] + cur_loc)
+        next_loc = student_path_global[traj_idx, 0, :3]
+        yaw = np.arctan2(next_loc[1] - cur_loc[1], next_loc[0] - cur_loc[0])
+        next_att = R.from_euler('z', yaw).as_quat()
+        next_att = np.asarray([next_att[-1], next_att[0], next_att[1], next_att[2]])
 
-        pos = Rot.apply(next_loc + np.asarray([x_offset, y_offset, 0]))
-        att = Rot*R.from_quat([next_att[1], next_att[2], next_att[3], next_att[0]])
-        att = att.as_quat()
-        att = np.asarray([att[-1], att[0], att[1], att[2]])
-        camera_positions = torch.tensor([pos], device=sim.device, dtype=torch.float32)
-        camera_orientations = torch.tensor([att], device=sim.device, dtype=torch.float32)
+        print("Current location: ", cur_loc)
+        print("Goal location: ", goal)
+        print("Planned states", student_path_global[:, :3])
+        print("Collision probability: ", collision_prediction)
+
+        next_loc_isaac = Rot.apply(next_loc)
+        next_att_isaac = Rot*R.from_quat([next_att[1], next_att[2], next_att[3], next_att[0]])
+        next_att_isaac = next_att_isaac.as_quat()
+        next_att_isaac = np.asarray([next_att_isaac[-1], next_att_isaac[0], next_att_isaac[1], next_att_isaac[2]])
+        
+        camera_positions = torch.tensor([next_loc_isaac], device=sim.device, dtype=torch.float32)
+        camera_orientations = torch.tensor([next_att_isaac], device=sim.device, dtype=torch.float32)
+
         camera.set_world_poses(camera_positions, camera_orientations, convention='world')
 
         trajectory.append(cur_loc)
+        collision_cost_prediction.append(collision_prediction)
         cur_loc = next_loc
         cur_att  = next_att
+        # goal_idx += 20
+        # if goal_idx < len(states):
+        #     goal = states[goal_idx, :3]
+        # else:
+        #     goal = states[-1, :3]
         iterations += 1
-        if iterations > 50:
+        if iterations > 5:
             trajectory_np = np.asarray(trajectory)
-            np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_data/trajectory.npy", trajectory_np)
+            collision_np = np.asarray(collision_cost_prediction)
+            # np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_{epoch}.npy", trajectory_np)
+            # np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_collision_{epoch}.npy", collision_np)
+            np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory.npy", trajectory_np)
+            np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_collision.npy", collision_np)
         
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     trajectory = np.asarray(trajectory)
-    np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_data/trajectory.npy", trajectory)
+    collision_cost_prediction = np.asarray(collision_cost_prediction)
+    # np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/student_trajectory_{epoch}.npy", trajectory)
+    # np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/student_trajectory_collision_{epoch}.npy", collision_cost_prediction)
+    np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory.npy", trajectory_np)
+    np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_collision.npy", collision_np)
 
 if __name__ == "__main__":
     # run the main function
