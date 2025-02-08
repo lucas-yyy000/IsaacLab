@@ -81,6 +81,7 @@ from omni.isaac.lab.sensors.camera import Camera, CameraCfg
 from omni.isaac.lab.sensors.camera.utils import create_pointcloud_from_depth
 from omni.isaac.lab.utils import convert_dict_to_backend
 import omni.kit.actions.core
+from omni.kit.viewport.utility import get_active_viewport
 
 # torch.set_default_dtype(torch.float32)
 
@@ -95,12 +96,12 @@ def main():
 
     action_registry = omni.kit.actions.core.get_action_registry()
     # switches to camera lighting
-    action = action_registry.get_action("omni.kit.viewport.menubar.lighting", "set_lighting_mode_camera")
+    action = action_registry.get_action("omni.kit.viewport.menubar.lighting", "set_lighting_mode_stage")
     action.execute()
 
     prim_utils.create_prim("/World/Origin_00", "Xform")
     camera_cfg = CameraCfg(
-        prim_path="/World/Origin_.*/CameraSensor",
+        prim_path="/World/Origin_.*/CameraSensorLevel",
         update_period=0,
         height=480,
         width=640,
@@ -109,27 +110,56 @@ def main():
             "distance_to_image_plane"
         ],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
+            focal_length=12.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
     )
     camera = Camera(cfg=camera_cfg)
 
+    camera_tilted_cfg = CameraCfg(
+        prim_path="/World/Origin_.*/CameraSensorTilted",
+        update_period=0,
+        height=480,
+        width=640,
+        data_types=[
+            "rgb",
+            "distance_to_image_plane"
+        ],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=12.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
+        ),
+    )
+    camera_tilted = Camera(cfg=camera_tilted_cfg)
+    pitch_30 = R.from_euler('y', 30, degrees=True)
     # design the scene
     # Play simulator
     sim.reset()
     # Now we are ready!
     print("[INFO]: Setup complete...")
 
+    camera_path = "/World/Origin_00/CameraSensorTilted"
+    viewport = get_active_viewport()
+    if not viewport:
+        raise RuntimeError("No active Viewport")
+    # Set the Viewport's active camera to the
+    # camera prim path you want to switch to.
+    viewport.camera_path = camera_path
+
 
     # Create replicator writer
-    output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TrainingData", "img_data")
-    rep_writer = rep.BasicWriter(
-        output_dir=output_dir,
+    level_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TrainingData", "img_data_level")
+    level_rep_writer = rep.BasicWriter(
+        output_dir=level_output_dir,
+        frame_padding=0
+    )
+
+    tilted_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TrainingData", "img_data_tilted")
+    tilted_rep_writer = rep.BasicWriter(
+        output_dir=tilted_output_dir,
         frame_padding=0
     )
 
 
-    base_path = "/home/lucas/Workspace/LowAltitudeFlight/TrainingData/expert_demonstrations"
+    base_path = "/home/lucas/Workspace/LowAltitudeFlight/TrainingData/trajectories"
     x_offset = -114.6951789855957
     y_offset = -78.78693771362305
     Rot = R.from_matrix(np.asarray([
@@ -149,49 +179,76 @@ def main():
     pos = Rot.apply(state[:3])
     attitude_start_idx = 6
     att = Rot*R.from_quat([state[attitude_start_idx+1], state[attitude_start_idx+2], state[attitude_start_idx+3], state[attitude_start_idx]])
+    att_tilted = att*pitch_30
     att = att.as_quat()
+    att_tilted = att_tilted.as_quat()
     att = np.asarray([att[-1], att[0], att[1], att[2]])
+    att_tilted = np.asarray([att_tilted[-1], att_tilted[0], att_tilted[1], att_tilted[2]])
     camera_positions = torch.tensor([pos], device=sim.device, dtype=torch.float32)
     camera_orientations = torch.tensor([att], device=sim.device, dtype=torch.float32)
-    # camera.set_world_poses_from_view(camera_positions, camera_targets)
+    camera_tilted_orientations = torch.tensor([att_tilted], device=sim.device, dtype=torch.float32)
+
     camera.set_world_poses(camera_positions, camera_orientations, convention='world')
+    camera_tilted.set_world_poses(camera_positions, camera_tilted_orientations, convention='world')
     print("Set camera pose successfully.")
-    camera_index = 0
+    # camera_index = 0
+
     # time.sleep(5.0)
     # Run simulator
     while simulation_app.is_running():
         sim.step()
         camera.update(dt=sim.get_physics_dt())
-                # Print camera info
+        camera_tilted.update(dt=sim.get_physics_dt())
+
+        # Print camera info
         print(camera)
-        if "rgb" in camera.data.output.keys():
-            print("Received shape of rgb image  : ", camera.data.output["rgb"].shape)
-        if "distance_to_image_plane" in camera.data.output.keys():
-            print("Received shape of depth image : ", camera.data.output["distance_to_image_plane"].shape)
+        print(camera_tilted)
+        # if "rgb" in camera.data.output.keys():
+        #     print("Received shape of rgb image  : ", camera.data.output["rgb"].shape)
+        # if "distance_to_image_plane" in camera.data.output.keys():
+        #     print("Received shape of depth image : ", camera.data.output["distance_to_image_plane"].shape)
+
         # Save images from camera at camera_index
         # note: BasicWriter only supports saving data in numpy format, so we need to convert the data to numpy.
-        single_cam_data = convert_dict_to_backend(
-            {k: v[camera_index] for k, v in camera.data.output.items()}, backend="numpy"
+        level_cam_data = convert_dict_to_backend(
+            {k: v[0] for k, v in camera.data.output.items()}, backend="numpy"
         )
-
+        tilted_cam_data = convert_dict_to_backend(
+            {k: v[0] for k, v in camera_tilted.data.output.items()}, backend="numpy"
+        )
         # Extract the other information
-        single_cam_info = camera.data.info[camera_index]
+        level_cam_info = camera.data.info[0]
+        tilted_cam_info = camera_tilted.data.info[0]
         print("Traj: ", num, " Idx: ", step_idx)
         # Pack data back into replicator format to save them using its writer
-        rep_output = {"annotators": {}}
-        for key, data, info in zip(single_cam_data.keys(), single_cam_data.values(), single_cam_info.values()):
+        rep_output_level = {"annotators": {}}
+        for key, data, info in zip(level_cam_data.keys(), level_cam_data.values(), level_cam_info.values()):
             # print('Key Data Info: ', key, data, info)
             if info is not None:
-                rep_output["annotators"][key] = {"render_product": {"data": data, **info}}
+                rep_output_level["annotators"][key] = {"render_product": {"data": data, **info}}
             else:
                 print("<<====================   No INFO   ====================>>")
                 # print("Key: ", key)
                 # key_indexed = key + f"_{num}_{step_idx}"
-                rep_output["annotators"][key] = {"render_product": {"data": data}}
+                rep_output_level["annotators"][key] = {"render_product": {"data": data}}
+        rep_output_tilted = {"annotators": {}}
+        for key, data, info in zip(tilted_cam_data.keys(), tilted_cam_data.values(), tilted_cam_info.values()):
+            # print('Key Data Info: ', key, data, info)
+            if info is not None:
+                rep_output_tilted["annotators"][key] = {"render_product": {"data": data, **info}}
+            else:
+                print("<<====================   No INFO   ====================>>")
+                # print("Key: ", key)
+                # key_indexed = key + f"_{num}_{step_idx}"
+                rep_output_tilted["annotators"][key] = {"render_product": {"data": data}}
+        
         # Save images
         # Note: We need to provide On-time data for Replicator to save the images.
-        rep_output["trigger_outputs"] = {"on_time": camera.frame[camera_index]}
-        rep_writer.write(rep_output)
+        rep_output_level["trigger_outputs"] = {"on_time": camera.frame[0]}
+        level_rep_writer.write(rep_output_level)
+
+        rep_output_tilted["trigger_outputs"] = {"on_time": camera_tilted.frame[0]}
+        tilted_rep_writer.write(rep_output_tilted)
 
         step_idx += 1
         if step_idx >= step_max:
@@ -202,18 +259,22 @@ def main():
             states[:, 1] += y_offset
             step_idx = 0
             step_max = len(states)
+            break
         
         state = states[step_idx, :]
         pos = Rot.apply(state[:3])
         att =  Rot*R.from_quat([state[attitude_start_idx+1], state[attitude_start_idx+2], state[attitude_start_idx+3], state[attitude_start_idx]])
+        att_tilted = att*pitch_30
         att = att.as_quat()
+        att_tilted = att_tilted.as_quat()
         att = np.asarray([att[-1], att[0], att[1], att[2]])
+        att_tilted = np.asarray([att_tilted[-1], att_tilted[0], att_tilted[1], att_tilted[2]])
         camera_positions = torch.tensor([pos], device=sim.device, dtype=torch.float32)
         camera_orientations = torch.tensor([att], device=sim.device, dtype=torch.float32)
-        # camera_positions = torch.tensor([np.asarray([-state[1], state[0], state[2]])], device=sim.device, dtype=torch.float32)
-        # camera_orientations = torch.tensor([state[3:7]], device=sim.device, dtype=torch.float32)
-        # camera.set_world_poses_from_view(camera_positions, camera_targets)
+        camera_tilted_orientations = torch.tensor([att_tilted], device=sim.device, dtype=torch.float32)
+
         camera.set_world_poses(camera_positions, camera_orientations, convention='world')
+        camera_tilted.set_world_poses(camera_positions, camera_tilted_orientations, convention='world')
 
 
 if __name__ == "__main__":
