@@ -173,8 +173,8 @@ def main():
     # Load Student Policy
     device='cuda'
     checkpoints_path = "/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/checkpoints"
-    run_name = "0bfd072d"
-    checkpoint_name = "epoch_210.pth"
+    run_name = "ff004055"
+    checkpoint_name = "epoch_200.pth"
 
     with open(os.path.join(checkpoints_path, run_name, "config.yaml"), "r") as f:
         config = yaml.load(f, Loader=yaml.SafeLoader)
@@ -274,12 +274,14 @@ def main():
         if np.linalg.norm(goal - cur_loc) < 20.0:
             break
 
-        heading /= np.linalg.norm(heading)
+        # heading /= np.linalg.norm(heading)
+        heading /= 10.0
+
         heading = torch.from_numpy(heading).unsqueeze(dim=0).to(device).to(torch.float32)
         depth_img = camera.data.output["distance_to_image_plane"].squeeze(dim=3).squeeze(dim=0).cpu().numpy()
         print("Depth image shape: ", depth_img.shape)
         depth_img = transform(depth_img)
-        depth_img /= 1000.0
+        depth_img /= 100.0
         depth_img = depth_img.unsqueeze(dim=0).to(device)
         attitude = torch.from_numpy(cur_att).unsqueeze(dim=0).to(device).to(torch.float32)
         cur_loc_torch = torch.from_numpy(cur_loc).unsqueeze(dim=0).to(device)
@@ -303,8 +305,8 @@ def main():
         # if collision_prediction[0][0] > 1.5:
         #     student_path_global[0, 2] = cur_loc[2]
 
-        next_loc = student_path_global[5, :3]
-        next_loc_prev = student_path_global[4, :3]
+        next_loc = student_path_global[1, :3]
+        next_loc_prev = student_path_global[0, :3]
         yaw = np.arctan2(next_loc[1] - next_loc_prev[1], next_loc[0] - next_loc_prev[0])
         next_att = R.from_euler('z', yaw).as_quat()
         next_att = np.asarray([next_att[-1], next_att[0], next_att[1], next_att[2]])

@@ -89,7 +89,7 @@ def main():
     """Main function."""
     omni.usd.get_context().open_stage("/home/lucas/Documents/Omniverse/IsaacSimTerrains/terrains/terrain_0.usd")
     # Load simulation context
-    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device, dt=1e-3)
+    sim_cfg = sim_utils.SimulationCfg(device=args_cli.device, dt=1e-4)
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([0, 0, 50.0], [100.0, 100.0, 30.0])
@@ -106,11 +106,10 @@ def main():
         height=480,
         width=640,
         data_types=[
-            "rgb",
-            "distance_to_image_plane"
+            "rgb"
         ],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=12.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
+            focal_length=10.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
     )
     camera = Camera(cfg=camera_cfg)
@@ -121,15 +120,30 @@ def main():
         height=480,
         width=640,
         data_types=[
-            "rgb",
-            "distance_to_image_plane"
+            "rgb"
         ],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=12.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
+            focal_length=10.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
         ),
     )
     camera_tilted = Camera(cfg=camera_tilted_cfg)
     pitch_30 = R.from_euler('y', 30, degrees=True)
+
+
+    camera_depth_cfg = CameraCfg(
+        prim_path="/World/Origin_.*/CameraSensorDepth",
+        update_period=0,
+        height=480,
+        width=640,
+        data_types=[
+            "distance_to_image_plane"
+        ],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=10.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
+        ),
+    )
+    camera_depth = Camera(cfg=camera_depth_cfg)
+    
     # design the scene
     # Play simulator
     sim.reset()
@@ -155,6 +169,12 @@ def main():
     tilted_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TrainingData", "img_data_tilted")
     tilted_rep_writer = rep.BasicWriter(
         output_dir=tilted_output_dir,
+        frame_padding=0
+    )
+
+    depth_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TrainingData", "img_data_depth")
+    depth_rep_writer = rep.BasicWriter(
+        output_dir=depth_output_dir,
         frame_padding=0
     )
 
@@ -190,6 +210,7 @@ def main():
 
     camera.set_world_poses(camera_positions, camera_orientations, convention='world')
     camera_tilted.set_world_poses(camera_positions, camera_tilted_orientations, convention='world')
+    camera_depth.set_world_poses(camera_positions, camera_orientations, convention='world')
     print("Set camera pose successfully.")
     # camera_index = 0
 
@@ -199,10 +220,12 @@ def main():
         sim.step()
         camera.update(dt=sim.get_physics_dt())
         camera_tilted.update(dt=sim.get_physics_dt())
+        camera_depth.update(dt=sim.get_physics_dt())
 
         # Print camera info
         print(camera)
         print(camera_tilted)
+        print(camera_depth)
         # if "rgb" in camera.data.output.keys():
         #     print("Received shape of rgb image  : ", camera.data.output["rgb"].shape)
         # if "distance_to_image_plane" in camera.data.output.keys():
@@ -216,9 +239,13 @@ def main():
         tilted_cam_data = convert_dict_to_backend(
             {k: v[0] for k, v in camera_tilted.data.output.items()}, backend="numpy"
         )
+        depth_cam_data = convert_dict_to_backend(
+            {k: v[0] for k, v in camera_depth.data.output.items()}, backend="numpy"
+        )
         # Extract the other information
         level_cam_info = camera.data.info[0]
         tilted_cam_info = camera_tilted.data.info[0]
+        depth_cam_info = camera_depth.data.info[0]
         print("Traj: ", num, " Idx: ", step_idx)
         # Pack data back into replicator format to save them using its writer
         rep_output_level = {"annotators": {}}
@@ -227,21 +254,25 @@ def main():
             if info is not None:
                 rep_output_level["annotators"][key] = {"render_product": {"data": data, **info}}
             else:
-                print("<<====================   No INFO   ====================>>")
-                # print("Key: ", key)
-                # key_indexed = key + f"_{num}_{step_idx}"
+                print("<<====================   Level Cam No INFO   ====================>>")
                 rep_output_level["annotators"][key] = {"render_product": {"data": data}}
+
         rep_output_tilted = {"annotators": {}}
         for key, data, info in zip(tilted_cam_data.keys(), tilted_cam_data.values(), tilted_cam_info.values()):
-            # print('Key Data Info: ', key, data, info)
             if info is not None:
                 rep_output_tilted["annotators"][key] = {"render_product": {"data": data, **info}}
             else:
-                print("<<====================   No INFO   ====================>>")
-                # print("Key: ", key)
-                # key_indexed = key + f"_{num}_{step_idx}"
+                print("<<====================   Tilted Cam No INFO   ====================>>")
                 rep_output_tilted["annotators"][key] = {"render_product": {"data": data}}
-        
+
+        rep_output_depth = {"annotators": {}}
+        for key, data, info in zip(depth_cam_data.keys(), depth_cam_data.values(), depth_cam_info.values()):
+            if info is not None:
+                rep_output_depth["annotators"][key] = {"render_product": {"data": data, **info}}
+            else:
+                print("<<====================   Depth Cam No INFO   ====================>>")
+                rep_output_depth["annotators"][key] = {"render_product": {"data": data}}
+
         # Save images
         # Note: We need to provide On-time data for Replicator to save the images.
         rep_output_level["trigger_outputs"] = {"on_time": camera.frame[0]}
@@ -249,6 +280,9 @@ def main():
 
         rep_output_tilted["trigger_outputs"] = {"on_time": camera_tilted.frame[0]}
         tilted_rep_writer.write(rep_output_tilted)
+
+        rep_output_depth["trigger_outputs"] = {"on_time": camera_depth.frame[0]}
+        depth_rep_writer.write(rep_output_depth)
 
         step_idx += 1
         if step_idx >= step_max:
@@ -259,7 +293,6 @@ def main():
             states[:, 1] += y_offset
             step_idx = 0
             step_max = len(states)
-            break
         
         state = states[step_idx, :]
         pos = Rot.apply(state[:3])
@@ -275,6 +308,7 @@ def main():
 
         camera.set_world_poses(camera_positions, camera_orientations, convention='world')
         camera_tilted.set_world_poses(camera_positions, camera_tilted_orientations, convention='world')
+        camera_depth.set_world_poses(camera_positions, camera_orientations, convention='world')
 
 
 if __name__ == "__main__":
