@@ -160,26 +160,26 @@ def main():
 
 
     # Create replicator writer
-    level_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TrainingData", "img_data_level")
+    level_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TestDepthData", "img_data_level")
     level_rep_writer = rep.BasicWriter(
         output_dir=level_output_dir,
         frame_padding=0
     )
 
-    tilted_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TrainingData", "img_data_tilted")
+    tilted_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TestDepthData", "img_data_tilted")
     tilted_rep_writer = rep.BasicWriter(
         output_dir=tilted_output_dir,
         frame_padding=0
     )
 
-    depth_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TrainingData", "img_data_depth")
+    depth_output_dir = os.path.join("/home/lucas/Workspace/LowAltitudeFlight/TestDepthData", "img_data_depth")
     depth_rep_writer = rep.BasicWriter(
         output_dir=depth_output_dir,
         frame_padding=0
     )
 
 
-    base_path = "/home/lucas/Workspace/LowAltitudeFlight/TrainingData/trajectories"
+    base_path = "/home/lucas/Workspace/LowAltitudeFlight/expert_demonstrations/ExpertDemonstrations"
     x_offset = -114.6951789855957
     y_offset = -78.78693771362305
     Rot = R.from_matrix(np.asarray([
@@ -197,7 +197,7 @@ def main():
     state = states[step_idx, :]
     step_max = len(states)
     pos = Rot.apply(state[:3])
-    attitude_start_idx = 6
+    attitude_start_idx = 3
     att = Rot*R.from_quat([state[attitude_start_idx+1], state[attitude_start_idx+2], state[attitude_start_idx+3], state[attitude_start_idx]])
     att_tilted = att*pitch_30
     att = att.as_quat()
@@ -293,6 +293,7 @@ def main():
             states[:, 1] += y_offset
             step_idx = 0
             step_max = len(states)
+            print("Collecting data for trajectory: ", num)
         
         state = states[step_idx, :]
         pos = Rot.apply(state[:3])

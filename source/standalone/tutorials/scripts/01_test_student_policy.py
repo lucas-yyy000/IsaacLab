@@ -172,32 +172,35 @@ def main():
         [0, 0, 1]
     ]))
     
-    num=10
-    states = genfromtxt(os.path.join(base_path, f"{num}_states.csv"), delimiter=',')
-    states = states[1:, :-1]
-    states[:, 0] += x_offset
-    states[:, 1] += y_offset
+    # num=3
+    # states = genfromtxt(os.path.join(base_path, f"{num}_states.csv"), delimiter=',')
+    # states = states[1:, :-1]
+    # states[:, 0] += x_offset
+    # states[:, 1] += y_offset
+
+    # cur_loc = states[0, :3]
+    # cur_att = states[0, 3:7]
+    # goal_idx = -1
+    # goal = states[goal_idx, :3]
 
 
     #####  TEST POINTS #####
     # start_location = np.array([4.3638, -54.2186, 30.0])
     # goal_location = np.array([50.36758, 65.43091, 30.0])
 
-    start_location = np.array([4.3638, -54.2186, 30.0])
-    goal_location_1 = np.array([-70.36758, -30.43091, 30.0])
-    goal_location_2 = np.array([-70.36758, 65.43091, 30.0])
-    ########################
+    # start_location = np.array([4.3638, -54.2186, 30.0])
+    # goal_location_1 = np.array([-87.36758, -30.43091, 30.0])
+    # goal_location_2 = np.array([-60.36758, 65.43091, 30.0])
+    start_location = np.array([4.3638, -45.2186, 20.5])
+    goal_location_1 = np.array([-90.36758, -30.43091, 30.0])
+    goal_location_2 = np.array([-10.36758, 35.43091, 25.0])
+    goal = goal_location_1
 
-    # cur_loc = states[0, :3]
-    # cur_att = states[0, 3:7]
     cur_loc = start_location
     yaw = np.arctan2(goal_location_1[1] - start_location[1], goal_location_1[0] - start_location[0])
     cur_att = R.from_euler('z', yaw).as_quat()
     cur_att = np.asarray([cur_att[-1], cur_att[0], cur_att[1], cur_att[2]])
-    
-    # goal_idx = -1
-    # goal = states[goal_idx, :3]
-    goal = goal_location_1
+    ########################
 
     cur_loc_isaac = Rot.apply(cur_loc)
     cur_att_isaac = Rot*R.from_quat([cur_att[1], cur_att[2], cur_att[3], cur_att[0]])
@@ -222,7 +225,7 @@ def main():
 
         heading = goal - cur_loc
 
-        if np.linalg.norm(heading[:2]) < 15.0:
+        if np.linalg.norm(heading[:2]) < 10.0:
             if first_goal_reached:
                 break
             else:
@@ -297,17 +300,17 @@ def main():
             collision_np = np.asarray(collision_cost_prediction)
             # np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_{epoch}.npy", trajectory_np)
             # np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_collision_{epoch}.npy", collision_np)
-            np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory.npy", trajectory_np)
-            np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_collision.npy", collision_np)
+            np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory.npy", trajectory_np)
+            np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_collision.npy", collision_np)
         
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     trajectory = np.asarray(trajectory)
     collision_cost_prediction = np.asarray(collision_cost_prediction)
     # np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/student_trajectory_{epoch}.npy", trajectory)
     # np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imperative_planning/student_trajectory_collision_{epoch}.npy", collision_cost_prediction)
-    np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory.npy", trajectory_np)
-    np.save("/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_collision.npy", collision_np)
+    np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory.npy", trajectory_np)
+    np.save(f"/home/lucas/Workspace/LowAltitudeFlight/FlightDev/low_altitude_flight/imitation_learning/student_trajectory_collision.npy", collision_np)
 
 if __name__ == "__main__":
     # run the main function
